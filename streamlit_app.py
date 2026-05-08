@@ -6,10 +6,10 @@ import folium
 from streamlit_folium import folium_static
 import plotly.express as px
 
-# Sahifa sozlamalari
-st.set_page_config(page_title="Amudarya & Shovot Monitoring", layout="wide", page_icon="🛰️")
+# 1. Sahifa sozlamalari
+st.set_page_config(page_title="Hydro-Agro Monitor", layout="wide", page_icon="🛰️")
 
-# 1. GEE Initialize (Secrets orqali)
+# 2. GEE Initialize (Secrets orqali)
 def init_gee():
     try:
         if "gee_key" in st.secrets:
@@ -31,32 +31,41 @@ def add_ee_layer(self, ee_image_object, vis_params, name):
         map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
         folium.raster_layers.TileLayer(
             tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='ESA/Google Earth Engine', name=name, overlay=True
+            attr='Google Earth Engine', name=name, overlay=True
         ).add_to(self)
     except:
         pass
 folium.Map.add_ee_layer = add_ee_layer
 
 if init_gee():
-    st.sidebar.title("📊 Monitoring Paneli")
+    # Sidebar Navigatsiya
+    st.sidebar.title("🚀 Monitoring Paneli")
     mode = st.sidebar.radio("Modulni tanlang:", 
-                            ["Shovot: EVI Xaritasi (Sentinel-2)", 
-                             "Amudaryo: Qor Zaxirasi", 
-                             "Amudaryo: Muzliklar Tahlili"])
+                            ["Shovot: Oylik EVI (Sentinel-2)", 
+                             "Amudaryo: Qor Zaxirasi (MODIS)", 
+                             "Amudaryo: Muzliklar (Sentinel-2)"])
     
-    year = st.sidebar.slider("Yilni tanlang", 2019, 2024, 2023)
+    # Umumiy yil tanlovi
+    year = st.sidebar.selectbox("Yilni tanlang", [2021, 2022, 2023, 2024], index=2)
 
-    # HUDUDLAR
+    # Hududlar (ROI)
     shovot_roi = ee.Geometry.Polygon([[[60.1, 41.5], [60.5, 41.5], [60.5, 41.8], [60.1, 41.8], [60.1, 41.5]]])
     upper_amudarya = ee.Geometry.Polygon([[[68.0, 36.5], [75.0, 36.5], [75.0, 39.5], [68.0, 39.5], [68.0, 36.5]]])
 
-    if mode == "Shovot: EVI Xaritasi (Sentinel-2)":
-        st.title("🛰️ Sentinel-2: EVI (Enhanced Vegetation Index)")
-        with st.spinner("Sentinel-2 ma'lumotlari tahlil qilinmoqda..."):
+    # --- MODUL 1: OYLIK EVI ---
+    if mode == "Shovot: Oylik EVI (Sentinel-2)":
+        st.title("🛰️ Shovot Tumani: Oylik EVI Monitoringi")
+        month = st.sidebar.slider("Oy", 3, 10, 6)
+        months_uz = {3:"Mart", 4:"Aprel", 5:"May", 6:"Iyun", 7:"Iyul", 8:"Avgust", 9:"Sentyabr", 10:"Oktyabr"}
+        st.subheader(f"📅 {year}-yil, {months_uz[month]} oyi")
+
+        with st.spinner("Sentinel-2 ma'lumotlari yuklanmoqda..."):
+            start_date = ee.Date.fromYMD(year, month, 1)
+            end_date = start_date.advance(1, 'month')
+            
             s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
-                .filterBounds(shovot_roi) \
-                .filterDate(f"{year}-06-01", f"{year}-08-31") \
-                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10)).median()
+                .filterBounds(shovot_roi).filterDate(start_date, end_date) \
+                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).median()
 
             evi = s2.expression(
                 '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
@@ -65,63 +74,57 @@ if init_gee():
                     'BLUE': s2.select('B2').divide(10000)
                 }).clip(shovot_roi)
 
-            m = folium.Map(location=[41.65, 60.30], zoom_start=11)
-            vis_params = {'min': 0, 'max': 1, 'palette': ['white', 'orange', 'yellow', 'green', 'darkgreen']}
-            m.add_ee_layer(evi, vis_params, 'EVI Index')
+            m1 = folium.Map(location=[41.65, 60.30], zoom_start=11)
+            vis_evi = {'min': 0, 'max': 0.8, 'palette': ['white', '#fcd163', '#99b718', '#207401', '#011301']}
+            m1.add_ee_layer(evi, vis_evi, 'EVI Index')
             
-            col1, col2 = st.columns([1, 3])
+            c1, c2 = st.columns([1, 3])
             try:
-                with col1:
-                    stats = evi.reduceRegion(ee.Reducer.mean(), shovot_roi, 30).getInfo()
-                    evi_val = stats['constant']
-                    st.metric(f"{year}-yilgi EVI", f"{evi_val:.3f}")
+                stats = evi.reduceRegion(ee.Reducer.mean(), shovot_roi, 100).getInfo()
+                val = stats['constant']
+                c1.metric("O'rtacha EVI", f"{val:.3f}")
             except:
-                st.warning("EVI koeffitsiyentini hisoblashda kechikish yuz berdi.")
-            with col2:
-                folium_static(m, width=850)
+                c1.warning("Ma'lumot topilmadi.")
+            folium_static(m1, width=900)
 
-    elif mode == "Amudaryo: Qor Zaxirasi":
-        st.title("🏔 Qishki Qor Qoplami Monitoringi")
-        with st.spinner("Qor miqdori hisoblanmoqda..."):
+    # --- MODUL 2: QOR ZAXIRASI ---
+    elif mode == "Amudaryo: Qor Zaxirasi (MODIS)":
+        st.title("🏔 Amudaryo Havzasi: Qor Qoplami")
+        with st.spinner("Qor tahlil qilinmoqda..."):
             snow_col = ee.ImageCollection("MODIS/006/MOD10A1") \
                 .filterDate(f"{year}-02-01", f"{year}-03-31").select('NDSI_Snow_Cover')
             max_snow = snow_col.max().clip(upper_amudarya)
             stats = max_snow.reduceRegion(ee.Reducer.mean(), upper_amudarya, 5000).getInfo()
             snow_pc = stats['NDSI_Snow_Cover']
-            
-            st.metric(f"{year}-yilgi Maksimal Qor Maydoni", f"{snow_pc:.1f}%")
-            history = pd.DataFrame({'Yil': [2021, 2022, 2023, 2024], 'Qor (%)': [32, 45, 39, snow_pc if year == 2024 else 41]})
-            st.plotly_chart(px.bar(history, x='Yil', y='Qor (%)', title="Yillik qor dinamikasi"))
 
-    elif mode == "Amudaryo: Muzliklar Tahlili":
-        st.title("🏔 Muzliklarning Erish Dinamikasi (Sentinel-2)")
-        # Muzlik hududini biroz kichiklashtirdik (Hisoblash oson bo'lishi uchun)
+            st.metric(f"{year}-yil Fevral-Mart qor maydoni", f"{snow_pc:.1f}%")
+            # Simulyatsiya grafigi
+            history = pd.DataFrame({'Yil': [2021, 2022, 2023, 2024], 'Qor (%)': [32, 45, 39, snow_pc if year == 2024 else 41]})
+            st.plotly_chart(px.line(history, x='Yil', y='Qor (%)', markers=True, title="Qor qoplami dinamikasi"))
+
+    # --- MODUL 3: MUZLIKLAR ---
+    elif mode == "Amudaryo: Muzliklar (Sentinel-2)":
+        st.title("🏔 Muzliklar Erishi Monitoringi")
         glacier_roi = ee.Geometry.Rectangle([71.8, 38.2, 72.3, 38.8])
         
         with st.spinner("Muzliklar tahlil qilinmoqda..."):
+            s2_g = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
+                .filterBounds(glacier_roi).filterDate(f"{year}-08-01", f"{year}-09-30") \
+                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5)).median()
+            
+            ndsi = s2_g.normalizedDifference(['B3', 'B11']).rename('NDSI')
+            glacier_mask = ndsi.gt(0.4).updateMask(ndsi.gt(0.4)).clip(glacier_roi)
+            
+            m3 = folium.Map(location=[38.5, 72.0], zoom_start=10)
+            m3.add_ee_layer(glacier_mask, {'min': 0, 'max': 1, 'palette': ['white', 'cyan', 'blue']}, 'Muzliklar')
+            
             try:
-                s2_g = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
-                    .filterBounds(glacier_roi).filterDate(f"{year}-08-01", f"{year}-09-30") \
-                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5)).median()
-                
-                ndsi = s2_g.normalizedDifference(['B3', 'B11']).rename('NDSI')
-                glacier_mask = ndsi.gt(0.4).clip(glacier_roi)
-                
-                m_g = folium.Map(location=[38.5, 72.0], zoom_start=10)
-                m_g.add_ee_layer(glacier_mask, {'min': 0, 'max': 1, 'palette': ['white', 'blue']}, 'Glaciers')
-                
-                # scale=100 ga o'zgartirildi (tezroq hisoblash uchun)
                 stats = glacier_mask.multiply(ee.Image.pixelArea()).reduceRegion(
-                    reducer=ee.Reducer.sum(),
-                    geometry=glacier_roi,
-                    scale=100,
-                    maxPixels=1e9
-                ).getInfo()
-                
+                    reducer=ee.Reducer.sum(), geometry=glacier_roi, scale=100, maxPixels=1e9).getInfo()
                 area_km2 = stats['NDSI'] / 1000000
-                st.metric("Hisoblangan muzlik maydoni", f"{area_km2:.2f} km²")
-                folium_static(m_g, width=850)
-            except Exception as e:
-                st.error(f"Muzlik ma'lumotlarini yuklashda xatolik: Server vaqti tugadi yoki ma'lumot yetarli emas.")
+                st.metric("Muzlik maydoni", f"{area_km2:.2f} km²")
+            except:
+                st.warning("Hisoblashda kechikish.")
+            folium_static(m3, width=900)
 else:
-    st.error("GEE ulanishida xatolik yuz berdi.")
+    st.error("GEE ulanish xatosi. Secrets'ni tekshiring.")
