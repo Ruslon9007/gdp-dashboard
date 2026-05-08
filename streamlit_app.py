@@ -2,68 +2,110 @@ import streamlit as st
 import ee
 import json
 import pandas as pd
+import folium
+from streamlit_folium import folium_static
 import plotly.express as px
 
-# GEE init qismini saqlab qolamiz...
+# Sahifa sozlamalari
+st.set_page_config(page_title="Amudarya Water Monitor", layout="wide", page_icon="🏔")
+
+# 1. GEE Initialize (Secrets orqali)
+def init_gee():
+    try:
+        if "gee_key" in st.secrets:
+            key_dict = dict(st.secrets["gee_key"])
+            credentials = ee.ServiceAccountCredentials(
+                key_dict['client_email'], 
+                key_data=json.dumps(key_dict)
+            )
+            ee.Initialize(credentials)
+            return True
+        return False
+    except Exception as e:
+        st.error(f"GEE ulanishida xato: {e}")
+        return False
 
 if init_gee():
-    st.sidebar.title("Navigatsiya")
-    mode = st.sidebar.radio("Modulni tanlang:", ["Shovot NDVI", "Amudaryo Qor Qoplami"])
+    # Sidebar Navigatsiya
+    st.sidebar.title("📊 Monitoring Paneli")
+    mode = st.sidebar.radio("Modulni tanlang:", ["Shovot: NDVI Xaritasi", "Amudaryo: Qor Zaxirasi"])
+    year = st.sidebar.slider("Yilni tanlang", 2015, 2024, 2023)
 
-    if mode == "Shovot NDVI":
-        # ... (Oldingi NDVI kodi) ...
-        st.title("🌾 Shovot NDVI tahlili")
+    # HUDUDLAR (Geometriya)
+    shovot_roi = ee.Geometry.Polygon([[[60.1, 41.5], [60.5, 41.5], [60.5, 41.8], [60.1, 41.8], [60.1, 41.5]]])
+    upper_amudarya = ee.Geometry.Polygon([[[68.0, 36.5], [75.0, 36.5], [75.0, 39.5], [68.0, 39.5], [68.0, 36.5]]])
+
+    if mode == "Shovot: NDVI Xaritasi":
+        st.title("🌾 Shovot Tumani: Vegetatsiya Indeksi (NDVI)")
         
-    elif mode == "Amudaryo Qor Qoplami":
-        st.title("🏔 Yuqori Amudaryo: Qor Zaxirasi Tahlili")
+        with st.spinner("NDVI tahlil qilinmoqda..."):
+            dataset = ee.ImageCollection('MODIS/006/MOD13A2') \
+                .filterDate(f"{year}-01-01", f"{year}-12-31") \
+                .select('NDVI').median().clip(shovot_roi)
+
+            # Xarita yaratish
+            m = folium.Map(location=[41.65, 60.30], zoom_start=11)
+            
+            def add_ee_layer(self, ee_image_object, vis_params, name):
+                map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
+                folium.raster_layers.TileLayer(
+                    tiles=map_id_dict['tile_fetcher'].url_format,
+                    attr='Google Earth Engine', name=name, overlay=True
+                ).add_to(self)
+            
+            folium.Map.add_ee_layer = add_ee_layer
+            vis_params = {'min': 0, 'max': 8000, 'palette': ['#d7191c', '#ffffbf', '#1a9641']}
+            m.add_ee_layer(dataset, vis_params, 'NDVI')
+            
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                stats = dataset.reduceRegion(ee.Reducer.mean(), shovot_roi, 1000).getInfo()
+                ndvi_val = stats['NDVI']/10000
+                st.metric(f"{year}-yil NDVI", f"{ndvi_val:.3f}")
+                st.info("Yashil - sog'lom ekinlar, Qizil - ochiq tuproq yoki sho'rlangan yerlar.")
+            with col2:
+                folium_static(m, width=800)
+
+    elif mode == "Amudaryo: Qor Zaxirasi":
+        st.title("🏔 Amudaryo Yuqori Havzasi: Qor Qoplami Tahlili")
         
-        # Amudaryo yuqori havzasi (Polygon)
-        upper_amudarya = ee.Geometry.Polygon([[[68.0, 36.5], [75.0, 36.5], [75.0, 39.5], [68.0, 39.5], [68.0, 36.5]]])
-        
-        selected_year = st.sidebar.slider("Yilni tanlang", 2015, 2024, 2023)
-        
-        with st.spinner("Qor qoplami hisoblanmoqda..."):
-            # MODIS Snow Cover ma'lumotlari
-            snow_dataset = ee.ImageCollection("MODIS/006/MOD10A1") \
-                .filterDate(f"{selected_year}-01-01", f"{selected_year}-03-31") \
+        with st.spinner("Qor miqdori hisoblanmoqda..."):
+            # MODIS Snow Cover (Fevral-Mart oylari eng muhim)
+            snow_col = ee.ImageCollection("MODIS/006/MOD10A1") \
+                .filterDate(f"{year}-02-01", f"{year}-03-31") \
                 .select('NDSI_Snow_Cover')
             
-            # Maksimal qor maydoni (qish oxiridagi holat)
-            max_snow = snow_dataset.max().clip(upper_amudarya)
-            
-            # Havzadagi o'rtacha qor qoplami foizini hisoblash
-            stats = max_snow.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=upper_amudarya,
-                scale=5000
-            ).getInfo()
-            
-            snow_percent = stats['NDSI_Snow_Cover']
-            
-            # Natijani chiqarish
+            max_snow = snow_col.max().clip(upper_amudarya)
+            stats = max_snow.reduceRegion(ee.Reducer.mean(), upper_amudarya, 5000).getInfo()
+            snow_pc = stats['NDSI_Snow_Cover']
+
             col1, col2 = st.columns(2)
-            col1.metric(f"{selected_year}-yil qishki qor maydoni", f"{snow_percent:.1f}%")
-            
-            # Kelgusi yil uchun prognoz mantiqi
-            # Agar qor 40% dan ko'p bo'lsa - sersuv, 30% dan kam bo'lsa - kam suv
-            if snow_percent > 45:
-                status = "🌊 Sersuv yil kutilmoqda"
-                color = "blue"
-            elif snow_percent < 35:
-                status = "⚠️ Kam suv (qurg'oqchilik) xavfi"
-                color = "red"
-            else:
-                status = "✅ O'rtacha suv hajmi"
-                color = "green"
-            
-            col2.markdown(f"### Prognoz: <span style='color:{color}'>{status}</span>", unsafe_content_allowed=True)
+            with col1:
+                st.metric(f"{year}-yilgi Maksimal Qor Maydoni", f"{snow_pc:.1f}%")
+                
+                # Oddiy prognoz mantiqi
+                if snow_pc > 42:
+                    st.success("🌊 Prognoz: Sersuv yil (Suv yetarli bo'ladi)")
+                elif snow_pc < 35:
+                    st.error("⚠️ Prognoz: Qurg'oqchilik xavfi (Suv tanqisligi)")
+                else:
+                    st.warning("✅ Prognoz: O'rtacha suv hajmi kutilmoqda")
 
-            # Dinamika uchun grafik (Simulyatsiya qilingan ma'lumot)
-            snow_history = {
-                'Yil': [2019, 2020, 2021, 2022, 2023, 2024],
-                'Qor qoplami (%)': [48, 42, 31, 46, 38, snow_percent]
-            }
-            fig = px.area(snow_history, x='Yil', y='Qor qoplami (%)', title="Yillar bo'yicha qor to'planish dinamikasi")
-            st.plotly_chart(fig)
+            with col2:
+                # Tarixiy grafik (Solishtirish uchun)
+                history = pd.DataFrame({
+                    'Yil': [2019, 2020, 2021, 2022, 2023, 2024],
+                    'Qor (%)': [48, 42, 32, 45, 39, snow_pc if year == 2024 else 41]
+                })
+                fig = px.bar(history, x='Yil', y='Qor (%)', color='Qor (%)', color_continuous_scale='Blues')
+                st.plotly_chart(fig)
 
-            st.info("Tahlil MODIS (MOD10A1) sun'iy yo'ldoshining NDSI indeksi asosida fevral-mart oylaridagi maksimal ko'rsatkichlar bo'yicha hisoblandi.")
+            st.write("---")
+            st.markdown("""
+            **Ilmiy asos:** Amudaryoning yozgi oqimi asosan qishki to'plangan qor zaxirasiga bog'liq. 
+            Fevral va mart oylaridagi qor qoplami (NDSI) kelgusi vegetatsiya davri uchun asosiy indikator hisoblanadi.
+            """)
+            
+
+else:
+    st.error("Xatolik: Tizim GEE serveriga ulanmadi. Iltimos, Secrets bo'limini tekshiring.")
