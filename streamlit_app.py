@@ -13,15 +13,26 @@ st.set_page_config(page_title="Amudarya & Shovot: Sentinel-2 EVI", layout="wide"
 def init_gee():
     try:
         if "gee_key" in st.secrets:
+            # Secrets'dan lug'atni olish
             key_dict = dict(st.secrets["gee_key"])
-            credentials = ee.ServiceAccountCredentials(key_dict['client_email'], json.dumps(key_dict))
-            ee.Initialize(credentials)
+            
+            # MUHIM: ServiceAccountCredentials fayl yo'lini emas, 
+            # to'g'ridan-to'g'ri lug'atning o'zini (from_json metodu orqali) kutadi
+            credentials = ee.ServiceAccountCredentials(
+                key_dict['client_email'], 
+                key_data=json.dumps(key_dict) # Bu yerda xato yo'q, lekin ee.Initialize bilan tekshiramiz
+            )
+            
+            # Agar yuqoridagi usul xato bersa, muqobil (eng xavfsiz) usul:
+            # ee.Initialize(credentials) 
+            
+            # AMMO eng yangi va xatosiz usul quyidagicha:
+            ee.Initialize(credentials=credentials)
             return True
         return False
     except Exception as e:
         st.error(f"GEE ulanishida xato: {e}")
         return False
-
 if init_gee():
     st.sidebar.title("📊 Monitoring Paneli")
     mode = st.sidebar.radio("Modulni tanlang:", ["Shovot: EVI Xaritasi", "Amudaryo: Qor Zaxirasi"])
