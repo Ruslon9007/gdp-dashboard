@@ -89,3 +89,57 @@ if init_gee():
         st.title("🏔 Amudaryo Yuqori Havzasi: Qor Tahlili")
         # ... (oldingi qor kodi) ...
         st.info("Qor tahlili MODIS ma'lumotlari asosida ishlamoqda.")
+        elif mode == "Amudaryo: Muzliklar Tahlili":
+    st.title("🏔 Muzliklar va Ularning Erish Dinamikasi")
+    
+    # Amudaryoning eng yuqori muzlikli hududi (masalan, Fedchenko muzligi atrofi)
+    glacier_roi = ee.Geometry.Rectangle([71.5, 38.0, 72.5, 39.0])
+    
+    selected_year = st.sidebar.slider("Tahlil yili", 2019, 2024, 2023)
+
+    with st.spinner("Muzliklar maydoni hisoblanmoqda..."):
+        # Sentinel-2 ma'lumotlari (Muzliklarni aniqlash uchun Green va SWIR kanallari kerak)
+        s2_glacier = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
+            .filterBounds(glacier_roi) \
+            .filterDate(f"{selected_year}-08-01", f"{selected_year}-09-30") \
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5)) \
+            .median()
+
+        # NDSI (Muzlik va qorni aniqlash uchun asosiy indeks)
+        ndsi = s2_glacier.normalizedDifference(['B3', 'B11']).rename('NDSI')
+        
+        # Muzlik maydonini ajratib olish (NDSI > 0.4 odatda muz/qor)
+        glacier_mask = ndsi.gt(0.4).clip(glacier_roi)
+
+        # Xarita
+        m_glacier = folium.Map(location=[38.5, 72.0], zoom_start=9)
+        
+        # GEE qatlamini qo'shish funksiyasi (avvalgi koddan foydalaniladi)
+        def add_ee_layer(self, ee_image_object, vis_params, name):
+            map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
+            folium.raster_layers.TileLayer(
+                tiles=map_id_dict['tile_fetcher'].url_format,
+                attr='GEE', name=name, overlay=True
+            ).add_to(self)
+        folium.Map.add_ee_layer = add_ee_layer
+
+        vis_glacier = {'min': 0, 'max': 1, 'palette': ['white', 'cyan', 'blue']}
+        m_glacier.add_ee_layer(glacier_mask, vis_glacier, 'Glacier Area')
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            # Muzlik maydoni statistikasi (taxminiy km2 da)
+            stats = glacier_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=glacier_roi,
+                scale=20
+            ).getInfo()
+            
+            area_km2 = stats['NDSI'] / 1000000
+            st.metric("Hisoblangan muzlik maydoni", f"{area_km2:.2f} km²")
+            st.warning("""
+            **Ilmiy xulosa:** Muzliklar maydonining kamayishi uzoq muddatda Amudaryo oqimining barqarorligiga salbiy ta'sir qiladi. 
+            Hozirgi erish sur'ati yozgi toshqinlarni ko'paytirsa-da, kelajakda umumiy suv hajmining kamayishiga olib keladi.
+            """)
+        with col2:
+            folium_static(m_glacier, width=700)
