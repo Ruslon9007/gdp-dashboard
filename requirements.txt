@@ -1,5 +1,5 @@
 streamlit
-pandas
 earthengine-api
+pandas
 folium
 streamlit-folium
