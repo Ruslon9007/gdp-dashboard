@@ -27,11 +27,14 @@ def init_gee():
 
 # GEE qatlamini Foliumga qo'shish funksiyasi
 def add_ee_layer(self, ee_image_object, vis_params, name):
-    map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
-    folium.raster_layers.TileLayer(
-        tiles=map_id_dict['tile_fetcher'].url_format,
-        attr='ESA/Google Earth Engine', name=name, overlay=True
-    ).add_to(self)
+    try:
+        map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
+        folium.raster_layers.TileLayer(
+            tiles=map_id_dict['tile_fetcher'].url_format,
+            attr='ESA/Google Earth Engine', name=name, overlay=True
+        ).add_to(self)
+    except:
+        pass
 folium.Map.add_ee_layer = add_ee_layer
 
 if init_gee():
@@ -67,10 +70,13 @@ if init_gee():
             m.add_ee_layer(evi, vis_params, 'EVI Index')
             
             col1, col2 = st.columns([1, 3])
-            with col1:
-                stats = evi.reduceRegion(ee.Reducer.mean(), shovot_roi, 20).getInfo()
-                evi_val = stats['constant']
-                st.metric(f"{year}-yilgi EVI", f"{evi_val:.3f}")
+            try:
+                with col1:
+                    stats = evi.reduceRegion(ee.Reducer.mean(), shovot_roi, 30).getInfo()
+                    evi_val = stats['constant']
+                    st.metric(f"{year}-yilgi EVI", f"{evi_val:.3f}")
+            except:
+                st.warning("EVI koeffitsiyentini hisoblashda kechikish yuz berdi.")
             with col2:
                 folium_static(m, width=850)
 
@@ -89,21 +95,33 @@ if init_gee():
 
     elif mode == "Amudaryo: Muzliklar Tahlili":
         st.title("🏔 Muzliklarning Erish Dinamikasi (Sentinel-2)")
-        glacier_roi = ee.Geometry.Rectangle([71.5, 38.0, 72.5, 39.0])
+        # Muzlik hududini biroz kichiklashtirdik (Hisoblash oson bo'lishi uchun)
+        glacier_roi = ee.Geometry.Rectangle([71.8, 38.2, 72.3, 38.8])
+        
         with st.spinner("Muzliklar tahlil qilinmoqda..."):
-            s2_g = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
-                .filterBounds(glacier_roi).filterDate(f"{year}-08-01", f"{year}-09-30") \
-                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5)).median()
-            
-            ndsi = s2_g.normalizedDifference(['B3', 'B11']).rename('NDSI')
-            glacier_mask = ndsi.gt(0.4).clip(glacier_roi)
-            
-            m_g = folium.Map(location=[38.5, 72.0], zoom_start=9)
-            m_g.add_ee_layer(glacier_mask, {'min': 0, 'max': 1, 'palette': ['white', 'blue']}, 'Glaciers')
-            
-            stats = glacier_mask.multiply(ee.Image.pixelArea()).reduceRegion(ee.Reducer.sum(), glacier_roi, 20).getInfo()
-            area_km2 = stats['NDSI'] / 1000000
-            st.metric("Muzlik maydoni (taxminan)", f"{area_km2:.2f} km²")
-            folium_static(m_g, width=850)
+            try:
+                s2_g = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
+                    .filterBounds(glacier_roi).filterDate(f"{year}-08-01", f"{year}-09-30") \
+                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5)).median()
+                
+                ndsi = s2_g.normalizedDifference(['B3', 'B11']).rename('NDSI')
+                glacier_mask = ndsi.gt(0.4).clip(glacier_roi)
+                
+                m_g = folium.Map(location=[38.5, 72.0], zoom_start=10)
+                m_g.add_ee_layer(glacier_mask, {'min': 0, 'max': 1, 'palette': ['white', 'blue']}, 'Glaciers')
+                
+                # scale=100 ga o'zgartirildi (tezroq hisoblash uchun)
+                stats = glacier_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+                    reducer=ee.Reducer.sum(),
+                    geometry=glacier_roi,
+                    scale=100,
+                    maxPixels=1e9
+                ).getInfo()
+                
+                area_km2 = stats['NDSI'] / 1000000
+                st.metric("Hisoblangan muzlik maydoni", f"{area_km2:.2f} km²")
+                folium_static(m_g, width=850)
+            except Exception as e:
+                st.error(f"Muzlik ma'lumotlarini yuklashda xatolik: Server vaqti tugadi yoki ma'lumot yetarli emas.")
 else:
     st.error("GEE ulanishida xatolik yuz berdi.")
