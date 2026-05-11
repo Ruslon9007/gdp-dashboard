@@ -529,17 +529,17 @@ if start_button:
     
     # Ma'lumotlar jadvali
     st.subheader("📋 To'liq Ma'lumotlar Jadvali")
+    # Format the dataframe for display (avoid pandas styler issues on Streamlit Cloud)
+    display_df = df.copy()
+    for col in display_df.columns:
+        if col != 'Yil':
+            if 'EVI' in col or 'NDWI' in col or 'NDMI' in col or 'indeksi' in col:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "N/A")
+            else:
+                display_df[col] = display_df[col].apply(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
+
     st.dataframe(
-        df.style.format({
-            'Yog\'ingarchilik (mm)': '{:.1f}',
-            'EVI (Yashillik)': '{:.3f}',
-            'NDWI (Suv)': '{:.3f}',
-            'NDMI (Namlik)': '{:.3f}',
-            'Qor qoplami (%)': '{:.1f}',
-            'Muzlik indeksi': '{:.3f}',
-            'Bug\'lanish (mm)': '{:.1f}',
-            'Harorat (°C)': '{:.1f}'
-        }).background_gradient(cmap='RdYlGn', subset=['EVI (Yashillik)']),
+        display_df,
         use_container_width=True,
         height=400
     )
