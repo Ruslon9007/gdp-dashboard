@@ -1,6 +1,9 @@
+# requirements.txt
 streamlit
 earthengine-api
 pandas
-folium
-streamlit-folium
+numpy
 plotly
+matplotlib>=3.5.0
+openpyxl
+xlsxwriter
