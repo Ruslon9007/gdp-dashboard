@@ -1,80 +1,63 @@
 import streamlit as st
 import ee
-import json
-import folium
-from streamlit_folium import folium_static
+import pandas as pd
+import plotly.express as px
 
-# GEE Initialize
-def init_gee():
-    if "gee_key" in st.secrets:
-        try:
-            key_dict = dict(st.secrets["gee_key"])
-            credentials = ee.ServiceAccountCredentials(
-                key_dict['client_email'], 
-                key_data=json.dumps(key_dict)
-            )
-            ee.Initialize(credentials)
-            return True
-        except Exception as e:
-            st.error(f"Ulanishda xato: {e}")
-    return False
-
-def add_ee_layer(self, ee_image_object, vis_params, name):
-    try:
-        map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
-        folium.raster_layers.TileLayer(
-            tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='ESA/Sentinel-1', name=name, overlay=True
-        ).add_to(self)
-    except:
-        pass
-folium.Map.add_ee_layer = add_ee_layer
-
-if init_gee():
-    st.title("🛰️ Sentinel-1: Radar asosida Suv Monitoringi")
+def show_complex_graphs(user_roi):
+    st.header("📊 basin3: Ko'p yillik dinamika (2018-2025)")
     
-    year = st.sidebar.selectbox("Yil", [2023, 2024], index=1)
-    month = st.sidebar.slider("Oy", 1, 12, 5)
+    # 1. Ma'lumotlarni yig'ish (Oylik o'rtacha qiymatlar uchun)
+    years = range(2018, 2026)
+    
+    # Ma'lumotlarni saqlash uchun ro'yxat
+    data_list = []
 
-    # Assetni yuklash (basin3)
-    user_roi = ee.FeatureCollection("projects/ee-jumaboyevll/assets/basin3")
-    roi_centroid = user_roi.geometry().centroid().coordinates().getInfo()
+    with st.spinner("GEE serveridan real ma'lumotlar olinmoqda..."):
+        # Misol tariqasida EVI va Yog'ingarchilik trendini hisoblash
+        # (Barcha 7 ta ko'rsatkichni bir vaqtda hisoblash timeout bermasligi uchun yillik o'rtacha olamiz)
+        for year in years:
+            # Yog'ingarchilik (CHIRPS)
+            precip = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY") \
+                .filterBounds(user_roi) \
+                .filterDate(f'{year}-01-01', f'{year}-12-31') \
+                .sum().reduceRegion(ee.Reducer.mean(), user_roi, 5000).getInfo()
+            
+            # EVI (Sentinel-2) - Vegetatsiya davri (Apr-Okt)
+            s2_evi = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
+                .filterBounds(user_roi) \
+                .filterDate(f'{year}-04-01', f'{year}-10-30') \
+                .median()
+            
+            evi_val = s2_evi.expression(
+                '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+                    'NIR': s2_evi.select('B8').divide(10000),
+                    'RED': s2_evi.select('B4').divide(10000),
+                    'BLUE': s2_evi.select('B2').divide(10000)
+                }).reduceRegion(ee.Reducer.mean(), user_roi, 250).getInfo()
 
-    with st.spinner("Radar ma'lumotlari yuklanmoqda..."):
-        start_date = ee.Date.fromYMD(year, month, 1)
-        end_date = start_date.advance(1, 'month')
+            # Ma'lumotlarni yig'ish
+            data_list.append({
+                'Yil': year,
+                'Yogingarchilik (mm)': precip.get('precipitation', 0),
+                'EVI': evi_val.get('constant', 0)
+            })
 
-        # Sentinel-1 SAR GRD Kolleksiyasi
-        s1 = ee.ImageCollection('COPERNICUS/S1_GRD') \
-            .filterBounds(user_roi) \
-            .filterDate(start_date, end_date) \
-            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
-            .filter(ee.Filter.eq('instrumentMode', 'IW')) \
-            .median() \
-            .clip(user_roi)
+    # Pandas DataFrame yaratish
+    df = pd.DataFrame(data_list)
 
-        # Suvni ajratib olish (Thresholding)
-        # Odatda -18 dB dan past qiymatlar ochiq suvni bildiradi
-        water_mask = s1.select('VV').lt(-18).rename('Water')
-        # Faqat suv bo'lgan joylarni qoldirish
-        water_only = water_mask.updateMask(water_mask)
+    # 2. Grafik: Yog'ingarchilik va EVI korrelyatsiyasi
+    fig = px.line(df, x='Yil', y=['Yogingarchilik (mm)', 'EVI'], 
+                  title="Yog'ingarchilik va Vegetatsiya o'rtasidagi bog'liqlik",
+                  markers=True, line_shape='spline')
+    
+    # Ikkinchi o'qni qo'shish (EVI uchun)
+    fig.update_layout(yaxis2=dict(title='EVI', overlaying='y', side='right'))
+    st.plotly_chart(fig, use_container_width=True)
 
-        m = folium.Map(location=[roi_centroid[1], roi_centroid[0]], zoom_start=11)
-
-        # 1. Asosiy radar ko'rinishi (Oq-qora)
-        s1_vis = {'bands': ['VV'], 'min': -25, 'max': 0}
-        m.add_ee_layer(s1.select('VV'), s1_vis, 'Sentinel-1 VV (Radar)')
-
-        # 2. Aniqlangan suv qatlami (Ko'k rangda)
-        m.add_ee_layer(water_only, {'palette': ['blue']}, 'Aniqlangan Suv yuzasi')
-
-        folium_static(m, width=900)
-        
-        st.info("""
-        **Sentinel-1 SAR Tahlili:**
-        * Xaritadagi **qora hududlar** - radar nurlarini qaytarmaydigan silliq yuzalar (suv havzalari, kanallar).
-        * Ko'k qatlam - algoritm tomonidan avtomatik ajratilgan suv maydonlari.
-        * Radar bulutlardan o'tib ketgani uchun natija har qanday ob-havoda aniq chiqadi.
-        """)
-else:
-    st.error("GEE ulanmadi.")
+    # 3. Ma'lumotlar jadvali
+    st.subheader("📋 Raqamli ma'lumotlar (Export uchun)")
+    st.dataframe(df)
+    
+    # CSV yuklab olish tugmasi
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Ma'lumotlarni CSV ko'rinishida yuklash", csv, "basin3_data_2018_2025.csv", "text/csv")
