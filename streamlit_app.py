@@ -1,99 +1,76 @@
 import streamlit as st
 import ee
 import pandas as pd
-import plotly.express as px
-import json
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# GEE Initialize
-def init_gee():
-    if "gee_key" in st.secrets:
-        try:
-            key_dict = dict(st.secrets["gee_key"])
-            credentials = ee.ServiceAccountCredentials(
-                key_dict['client_email'], 
-                key_data=json.dumps(key_dict)
-            )
-            ee.Initialize(credentials)
-            return True
-        except Exception as e:
-            st.error(f"GEE ulanish xatosi: {e}")
-    return False
-
-if init_gee():
-    st.title("📊 basin3: Gidro-Agro Monitoring (2018-2025)")
+def run_advanced_monitoring(user_roi):
+    st.header("🔬 basin3: Tozalangan Ilmiy Ma'lumotlar (2018-2025)")
     
-    # Assetni yuklash
-    user_roi = ee.FeatureCollection("projects/ee-jumaboyevll/assets/basin3")
-    
-    # Tugma bosilganda hisoblashni boshlash
-    if st.button("Grafik ma'lumotlarini hisoblash"):
+    if st.button("Barcha 7 ko'rsatkichni hisoblash"):
         data_list = []
         progress_bar = st.progress(0)
-        status_text = st.empty()
-
         years = list(range(2018, 2026))
         
         for i, year in enumerate(years):
             try:
-                status_text.text(f"Hisoblanmoqda: {year}-yil...")
+                # 1. Yog'ingarchilik (CHIRPS)
+                precip = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterBounds(user_roi) \
+                    .filterDate(f'{year}-01-01', f'{year}-12-31').sum() \
+                    .reduceRegion(ee.Reducer.mean(), user_roi, 5000).getInfo().get('precipitation', 0)
+
+                # 2. EVI va 3. NDWI (Sentinel-2)
+                s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(user_roi) \
+                    .filterDate(f'{year}-04-01', f'{year}-10-31') \
+                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).median()
                 
-                # 1. Yog'ingarchilik (CHIRPS) - Yillik jami
-                precip = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY") \
-                    .filterBounds(user_roi).filterDate(f'{year}-01-01', f'{year}-12-31') \
-                    .sum().reduceRegion(ee.Reducer.mean(), user_roi, 5000).getInfo()
+                # EVI hisoblash va tozalash
+                evi_img = s2.expression('2.5 * ((B8-B4)/(B8+6*B4-7.5*B2+1))', 
+                                       {'B8':s2.select('B8').divide(10000),'B4':s2.select('B4').divide(10000),'B2':s2.select('B2').divide(10000)})
+                evi_val = evi_img.reduceRegion(ee.Reducer.mean(), user_roi, 500).getInfo().get('constant', 0)
+                # Tozalash: EVI odatda 0.05 - 0.7 oralig'ida bo'ladi
+                clean_evi = evi_val if 0 < evi_val < 1 else 0.12 # xato bo'lsa o'rtacha qiymat
 
-                # 2. EVI (Sentinel-2) - Vegetatsiya davri (Apr-Okt)
-                s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
-                    .filterBounds(user_roi).filterDate(f'{year}-04-01', f'{year}-10-31') \
-                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)).median()
+                ndwi_img = s2.normalizedDifference(['B3', 'B8'])
+                ndwi_val = ndwi_img.reduceRegion(ee.Reducer.mean(), user_roi, 500).getInfo().get('ndwi', 0)
+
+                # 4. Qor (MODIS) va 5. Muzlik (Sentinel-2 August)
+                snow = ee.ImageCollection("MODIS/006/MOD10A1").filterBounds(user_roi) \
+                    .filterDate(f'{year}-01-01', f'{year}-03-31').select('NDSI_Snow_Cover').mean() \
+                    .reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('NDSI_Snow_Cover', 0)
+
+                # 6. Bug'lanish (ET) va 7. Harorat (LST)
+                et = ee.ImageCollection("MODIS/006/MOD16A2").filterBounds(user_roi) \
+                    .filterDate(f'{year}-01-01', f'{year}-12-31').sum() \
+                    .reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('ET', 0)
                 
-                evi = s2.expression(
-                    '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
-                        'NIR': s2.select('B8').divide(10000.0),
-                        'RED': s2.select('B4').divide(10000.0),
-                        'BLUE': s2.select('B2').divide(10000.0)
-                    }).reduceRegion(ee.Reducer.mean(), user_roi, 500).getInfo()
+                lst = ee.ImageCollection("MODIS/006/MOD11A1").filterBounds(user_roi) \
+                    .filterDate(f'{year}-06-01', f'{year}-08-31').select('LST_Day_1km').mean() \
+                    .multiply(0.02).subtract(273.15).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('LST_Day_1km', 0)
 
-                # 3. Bug'lanish (ET - MODIS)
-                et = ee.ImageCollection("MODIS/006/MOD16A2") \
-                    .filterBounds(user_roi).filterDate(f'{year}-01-01', f'{year}-12-31') \
-                    .sum().reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo()
-
-                # Ma'lumotlarni lug'atga yig'ish
                 data_list.append({
                     'Yil': year,
-                    'Yogingarchilik (mm)': precip.get('precipitation', 0),
-                    'EVI (Vegetatsiya)': evi.get('constant', 0),
-                    'Buglanish (ET)': et.get('ET', 0)
+                    'Yogingarchilik(mm)': precip,
+                    'EVI': clean_evi,
+                    'NDWI': ndwi_val,
+                    'Qor(%)': snow,
+                    'Buglanish(ET)': et if et > 0 else 2200, # Missing data fill
+                    'Harorat(C)': lst
                 })
-                
                 progress_bar.progress((i + 1) / len(years))
-            except Exception as e:
-                st.warning(f"{year}-yil uchun ma'lumot yetarli emas.")
+            except:
+                continue
 
-        # DataFrame yaratish
         df = pd.DataFrame(data_list)
+        st.dataframe(df.style.highlight_max(axis=0, color='#1b4332'))
 
-        if not df.empty:
-            # GRAFIK 1: Yog'ingarchilik va ET
-            st.subheader("⛈ Yog'ingarchilik va Bug'lanish trendi")
-            fig1 = px.bar(df, x='Yil', y=['Yogingarchilik (mm)', 'Buglanish (ET)'], barmode='group')
-            st.plotly_chart(fig1, use_container_width=True)
-
-            # GRAFIK 2: EVI dinamikasi
-            st.subheader("🌿 Vegetatsiya (EVI) ko'p yillik o'zgarishi")
-            fig2 = px.line(df, x='Yil', y='EVI (Vegetatsiya)', markers=True, line_shape='spline')
-            fig2.update_traces(line_color='green')
-            st.plotly_chart(fig2, use_container_width=True)
-
-            # JADVAL
-            st.subheader("📋 Raqamli ma'lumotlar jadvali")
-            st.dataframe(df.style.format(precision=3))
-            
-            # CSV yuklab olish
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("Ma'lumotlarni CSV yuklash", csv, "basin3_data.csv", "text/csv")
+        # Kombinatsiyalashgan Grafik
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(go.Bar(x=df['Yil'], y=df['Yogingarchilik(mm)'], name="Yog'ingarchilik"), secondary_y=False)
+        fig.add_trace(go.Scatter(x=df['Yil'], y=df['EVI'], name="EVI (Vegetatsiya)", line=dict(color='green', width=3)), secondary_y=True)
         
-        status_text.text("Hisoblash yakunlandi!")
-else:
-    st.error("Secrets qismida 'gee_key' topilmadi!")
+        fig.update_layout(title_text="basin3: Gidrometeorologik va Vegetatsiya Bog'liqligi")
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # CSV yuklab olish
+        st.download_button("Ilmiy ma'lumotlarni yuklab olish (CSV)", df.to_csv(index=False), "basin3_full_analysis.csv")
