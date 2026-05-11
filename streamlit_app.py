@@ -486,6 +486,14 @@ if start_button:
     
     # Ma'lumotlarni DataFrame ga o'tkazish
     df = pd.DataFrame(final_results)
+
+    # Check if we have any data
+    if df.empty:
+        st.error("❌ Hech qanday ma'lumot olinmadi. Iltimos, yillar oralig'ini tekshiring yoki keyinroq urinib ko'ring.")
+        st.stop()
+
+    # Debug: show actual column names
+    st.write("Debug - Ustun nomlari:", list(df.columns))
     
     # --- NATIJALARNI KO'RSATISH ---
     st.markdown("---")
@@ -529,7 +537,7 @@ if start_button:
     
     # Ma'lumotlar jadvali
     st.subheader("📋 To'liq Ma'lumotlar Jadvali")
-    # Format the dataframe for display (avoid pandas styler issues on Streamlit Cloud)
+    # Formatlash uchun nusxa olish (styler muammolarini oldini olish)
     display_df = df.copy()
     for col in display_df.columns:
         if col != 'Yil':
