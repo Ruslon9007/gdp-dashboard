@@ -54,7 +54,7 @@ def initialize_ee():
     try:
         key_dict = dict(st.secrets["gee_key"])
         credentials = ee.ServiceAccountCredentials(
-            key_dict['client_email'], 
+            key_dict['client_email'],
             key_data=json.dumps(key_dict)
         )
         ee.Initialize(credentials)
@@ -114,33 +114,30 @@ def calculate_year_metrics(year, user_roi):
         else:
             results['Yog\'ingarchilik (mm)'] = None
 
-        # B. SENTINEL-2 MA'LUMOTLARI - TO'G'RILANDI
+        # B. SENTINEL-2 MA'LUMOTLARI
         s2_collection = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
             .filterBounds(user_roi) \
             .filterDate(f'{year}-04-01', f'{year}-10-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
 
         s2_count = s2_collection.size().getInfo()
+        has_all_bands = False
 
         if s2_count > 0:
-            # Median hisoblashdan oldin bandlar mavjudligini tekshirish
             first_img = s2_collection.first()
             band_names = first_img.bandNames().getInfo()
 
-            # Kerakli bandlar mavjudligini tekshirish
             required_bands = ['B2', 'B3', 'B4', 'B8', 'B11']
             has_all_bands = all(b in band_names for b in required_bands)
 
             if has_all_bands:
                 s2 = s2_collection.median()
 
-                # EVI - Enhanced Vegetation Index (TO'G'RILANDI)
-                # Bandlarni float ga aylantirish va scale qilish
+                # EVI - Enhanced Vegetation Index
                 b8 = s2.select('B8').multiply(0.0001).toFloat()
                 b4 = s2.select('B4').multiply(0.0001).toFloat()
                 b2 = s2.select('B2').multiply(0.0001).toFloat()
 
-                # EVI = 2.5 * ((NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1))
                 evi = b8.subtract(b4).multiply(2.5).divide(
                     b8.add(b4.multiply(6)).subtract(b2.multiply(7.5)).add(1)
                 ).clamp(-1, 1).rename('EVI')
@@ -194,8 +191,7 @@ def calculate_year_metrics(year, user_roi):
             results['NDWI (Suv)'] = None
             results['NDMI (Namlik)'] = None
 
-        # C. QOR VA MUZLIK - TO'G'RILANDI (MOD10A2 ishlatiladi)
-        # MODIS Snow Cover (8-kunlik) - Eight_Day_Snow_Cover bandi
+        # C. QOR VA MUZLIK (MOD10A2)
         snow_collection = ee.ImageCollection("MODIS/061/MOD10A2") \
             .filterBounds(user_roi) \
             .filterDate(f'{year}-01-01', f'{year}-03-31') \
@@ -204,7 +200,6 @@ def calculate_year_metrics(year, user_roi):
         snow_count = snow_collection.size().getInfo()
 
         if snow_count > 0:
-            # 0-100 oraliqda clamp qilish
             snow_img = snow_collection.mean().clamp(0, 100)
 
             snow_result = snow_img.reduceRegion(
@@ -220,7 +215,7 @@ def calculate_year_metrics(year, user_roi):
         else:
             results['Qor qoplami (%)'] = 0
 
-        # Muzlik indeksi (Sentinel-2 NDSI) - faqat yozda
+        # Muzlik indeksi (Sentinel-2 NDSI)
         if s2_count > 0 and has_all_bands:
             glacier_collection = s2_collection.filterDate(f'{year}-07-01', f'{year}-09-30')
             glacier_count = glacier_collection.size().getInfo()
@@ -247,8 +242,7 @@ def calculate_year_metrics(year, user_roi):
         else:
             results['Muzlik indeksi'] = None
 
-        # D. BUĞ'LANISH (ET) - TO'G'RILANDI
-        # MOD16A2 - ET bandi: 'ET' yoki 'Es'
+        # D. BUĞ'LANISH (ET) - MOD16A2
         et_collection = ee.ImageCollection("MODIS/006/MOD16A2") \
             .filterBounds(user_roi) \
             .filterDate(f'{year}-01-01', f'{year}-12-31')
@@ -256,11 +250,9 @@ def calculate_year_metrics(year, user_roi):
         et_count = et_collection.size().getInfo()
 
         if et_count > 0:
-            # Band nomini tekshirish
             first_et = et_collection.first()
             et_bands = first_et.bandNames().getInfo()
 
-            # ET bandi 'ET' yoki 'Es' bo'lishi mumkin
             et_band = 'ET' if 'ET' in et_bands else ('Es' if 'Es' in et_bands else None)
 
             if et_band:
@@ -272,14 +264,13 @@ def calculate_year_metrics(year, user_roi):
                 ).getInfo()
 
                 et_value = safe_get_value(et_result, et_band, None, 0, 10000)
-                # 0.1 scale factor (kg/m²/8day → mm)
                 results['Bug\'lanish (mm)'] = round(et_value * 0.1, 1) if et_value else None
             else:
                 results['Bug\'lanish (mm)'] = None
         else:
             results['Bug\'lanish (mm)'] = None
 
-        # E. HARORAT (LST) - TO'G'RILANDI
+        # E. HARORAT (LST) - MOD11A1
         lst_collection = ee.ImageCollection("MODIS/061/MOD11A1") \
             .filterBounds(user_roi) \
             .filterDate(f'{year}-06-01', f'{year}-08-31') \
@@ -312,7 +303,6 @@ def calculate_year_metrics(year, user_roi):
 def create_visualizations(df):
     """Interaktiv grafiklar yaratish"""
 
-    # NaN qiymatlarni oldini olish
     df = df.copy()
     for col in df.columns:
         if col != 'Yil':
@@ -322,20 +312,19 @@ def create_visualizations(df):
     fig1 = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
-            'Yog\'ingarchilik (mm)', 
+            'Yog\'ingarchilik (mm)',
             'EVI - O\'simlik yashilligi',
-            'Harorat (°C)', 
+            'Harorat (°C)',
             'Bug\'lanish (mm)'
         ),
         vertical_spacing=0.12,
         horizontal_spacing=0.1
     )
 
-    # Yog'ingarchilik
     if 'Yog\'ingarchilik (mm)' in df.columns:
         fig1.add_trace(
             go.Scatter(
-                x=df['Yil'], 
+                x=df['Yil'],
                 y=df['Yog\'ingarchilik (mm)'],
                 mode='lines+markers',
                 name='Yog\'ingarchilik',
@@ -346,11 +335,10 @@ def create_visualizations(df):
             row=1, col=1
         )
 
-    # EVI
     if 'EVI (Yashillik)' in df.columns:
         fig1.add_trace(
             go.Scatter(
-                x=df['Yil'], 
+                x=df['Yil'],
                 y=df['EVI (Yashillik)'],
                 mode='lines+markers',
                 name='EVI',
@@ -361,11 +349,10 @@ def create_visualizations(df):
             row=1, col=2
         )
 
-    # Harorat
     if 'Harorat (°C)' in df.columns:
         fig1.add_trace(
             go.Scatter(
-                x=df['Yil'], 
+                x=df['Yil'],
                 y=df['Harorat (°C)'],
                 mode='lines+markers',
                 name='Harorat',
@@ -376,11 +363,10 @@ def create_visualizations(df):
             row=2, col=1
         )
 
-    # Bug'lanish
     if 'Bug\'lanish (mm)' in df.columns:
         fig1.add_trace(
             go.Scatter(
-                x=df['Yil'], 
+                x=df['Yil'],
                 y=df['Bug\'lanish (mm)'],
                 mode='lines+markers',
                 name='Bug\'lanish',
@@ -481,7 +467,6 @@ def calculate_statistics(df):
         if df[col].notna().sum() > 1:
             values = df[col].dropna()
 
-            # Asosiy statistika
             stats[col] = {
                 'O\'rtacha': round(values.mean(), 2),
                 'Min': round(values.min(), 2),
@@ -489,7 +474,6 @@ def calculate_statistics(df):
                 'Std': round(values.std(), 2),
             }
 
-            # Trend (linear regression)
             if len(values) > 2:
                 x = np.arange(len(values))
                 y = values.values
@@ -566,7 +550,6 @@ if start_button:
     # Ma'lumotlarni DataFrame ga o'tkazish
     df = pd.DataFrame(final_results)
 
-    # Check if we have any data
     if df.empty:
         st.error("❌ Hech qanday ma'lumot olinmadi. Iltimos, yillar oralig'ini tekshiring yoki keyinroq urinib ko'ring.")
         st.stop()
@@ -625,7 +608,6 @@ if start_button:
     # Ma'lumotlar jadvali
     st.subheader("📋 To'liq Ma'lumotlar Jadvali")
 
-    # Formatlash uchun nusxa olish
     display_df = df.copy()
     for col in display_df.columns:
         if col != 'Yil':
@@ -679,13 +661,11 @@ if start_button:
         )
 
     with col2:
-        # Excel export
         from io import BytesIO
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Natijalar', index=False)
 
-            # Statistika sheetini qo'shish
             if stats:
                 stats_df = pd.DataFrame(stats).T
                 stats_df.to_excel(writer, sheet_name='Statistika')
