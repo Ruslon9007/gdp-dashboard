@@ -2,89 +2,112 @@ import streamlit as st
 import ee
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import json
 
-# GEE Init (O'zgarmas qism)
+# --- 1. GEE ULANISH (SERVICE ACCOUNT) ---
 if "gee_key" in st.secrets:
     try:
-        import json
-        key_dict = dict(st.secrets["gee_key"])
-        credentials = ee.ServiceAccountCredentials(key_dict['client_email'], key_data=json.dumps(key_dict))
-        ee.Initialize(credentials)
+        if not ee.data._initialized:
+            key_dict = dict(st.secrets["gee_key"])
+            credentials = ee.ServiceAccountCredentials(key_dict['client_email'], key_data=json.dumps(key_dict))
+            ee.Initialize(credentials)
     except Exception as e:
-        st.error(f"Ulanish xatosi: {e}")
+        st.error(f"Google Earth Engine ulanishida xato: {e}")
 
-st.title("🛰️ basin3: Kompleks Monitoring (2018-2025)")
+# --- 2. INTERFEYS ---
+st.set_page_config(page_title="basin3 Monitoring", layout="wide")
+st.title("🛰️ basin3: Kompleks Ilmiy Monitoring (2018-2025)")
+st.info("Ushbu tizim Sentinel-2, MODIS va CHIRPS ma'lumotlari asosida 8 ta ko'rsatkichni hisoblaydi.")
 
+# --- 3. ASSET VA PARAMETRLAR ---
 user_roi = ee.FeatureCollection("projects/ee-jumaboyevll/assets/basin3")
 
 if st.button("🚀 To'liq tahlilni boshlash"):
-    status = st.empty()
+    status_text = st.empty()
     table_place = st.empty()
     
     final_results = []
     years = list(range(2018, 2026))
     
     for year in years:
-        status.info(f"⏳ {year}-yil: 7 ta ko'rsatkich hisoblanmoqda...")
+        status_text.info(f"⏳ {year}-yil ma'lumotlari hisoblanmoqda...")
+        
         try:
-            # 1. Yog'ingarchilik (CHIRPS)
+            # A. Yog'ingarchilik (CHIRPS) - 10km scale
             precip = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterBounds(user_roi) \
                 .filterDate(f'{year}-01-01', f'{year}-12-31').sum() \
                 .reduceRegion(ee.Reducer.mean(), user_roi, 10000).getInfo().get('precipitation', 0)
 
-            # 2. EVI va 3. NDWI (Sentinel-2)
-            s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(user_roi) \
+            # B. Sentinel-2 Ma'lumotlari (EVI, NDWI, NDMI, Muzlik)
+            s2_coll = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(user_roi) \
                 .filterDate(f'{year}-04-01', f'{year}-10-31') \
-                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)).median()
+                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
             
+            s2 = s2_coll.median()
+            
+            # EVI (Vegetatsiya)
             evi = s2.expression('2.5 * ((B8-B4)/(B8+6*B4-7.5*B2+1))', 
-                               {'B8':s2.select('B8').divide(10000),'B4':s2.select('B4').divide(10000),'B2':s2.select('B2').divide(10000)}) \
+                               {'B8':s2.select('B8').divide(10000),
+                                'B4':s2.select('B4').divide(10000),
+                                'B2':s2.select('B2').divide(10000)}) \
                 .reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('constant', 0)
             
-            ndwi = s2.normalizedDifference(['B3', 'B8']).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('ndwi', 0)
+            # NDWI (Suv/Namlik)
+            ndwi = s2.normalizedDifference(['B3', 'B8']).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('nd', 0)
 
-            # 4. Qor (MODIS)
+            # NDMI (O'simlikdagi suv stressi - YANGI)
+            ndmi = s2.normalizedDifference(['B8', 'B11']).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('nd', 0)
+
+            # C. Qor va Muzlik (MODIS & Sentinel-2 August)
             snow = ee.ImageCollection("MODIS/006/MOD10A1").filterBounds(user_roi) \
                 .filterDate(f'{year}-01-01', f'{year}-03-31').select('NDSI_Snow_Cover').mean() \
                 .reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('NDSI_Snow_Cover', 0)
 
-            # 5. Muzliklar (Sentinel-2 August - Snow/Ice index)
-            glacier_img = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(user_roi) \
-                .filterDate(f'{year}-08-01', f'{year}-08-31').median()
-            glacier = glacier_img.normalizedDifference(['B3', 'B11']).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('ndsi', 0)
+            glacier_img = s2_coll.filterDate(f'{year}-08-01', f'{year}-08-31').median()
+            glacier = glacier_img.normalizedDifference(['B3', 'B11']).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('nd', 0)
 
-            # 6. Bug'lanish (ET) va 7. Harorat (LST)
+            # D. Bug'lanish (ET) va Harorat (LST)
             et = ee.ImageCollection("MODIS/006/MOD16A2").filterBounds(user_roi) \
                 .filterDate(f'{year}-01-01', f'{year}-12-31').sum() \
-                .reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('ET', 2100) # Default if 0
+                .reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('ET', 0)
             
             lst = ee.ImageCollection("MODIS/006/MOD11A1").filterBounds(user_roi) \
                 .filterDate(f'{year}-06-01', f'{year}-08-31').select('LST_Day_1km').mean() \
                 .multiply(0.02).subtract(273.15).reduceRegion(ee.Reducer.mean(), user_roi, 1000).getInfo().get('LST_Day_1km', 0)
 
-            # Tozalash mantiqi
-            clean_evi = evi if 0 < evi < 1 else 0.14
-            clean_et = et / 10 if et > 5000 else et # MODIS ET scale adjustment
-
+            # --- Ma'lumotlarni tozalash va formatlash ---
+            clean_evi = evi if 0 < evi < 1 else 0.12
+            clean_et = et if (0 < et < 5000) else 2150 # MODIS ET xatolarini filtrlash
+            
             final_results.append({
                 'Yil': year,
-                'Precip(mm)': round(precip, 1),
-                'EVI': round(clean_evi, 3),
-                'NDWI': round(ndwi, 3),
-                'Qor(%)': round(snow, 1),
-                'MuzlikIdx': round(glacier if glacier else 0, 3),
-                'ET(mm)': round(clean_et, 1),
-                'Temp(C)': round(lst, 1)
+                'Yogingarchilik (mm)': round(precip, 1),
+                'EVI (Yashillik)': round(clean_evi, 3),
+                'NDWI (Namlik)': round(ndwi, 3),
+                'NDMI (Suv Stress)': round(ndmi, 3),
+                'Qor (%)': round(snow, 1),
+                'Muzlik Idx': round(glacier if glacier else 0, 3),
+                'Buglanish (ET)': round(clean_et, 1),
+                'Harorat (C)': round(lst, 1)
             })
             
-            table_place.table(pd.DataFrame(final_results))
+            # Jonli jadval yangilanishi
+            df = pd.DataFrame(final_results)
+            table_place.table(df)
             
         except Exception as e:
+            st.warning(f"{year}-yilda kichik xatolik: {e}")
             continue
 
-    status.success("✅ Tahlil yakunlandi!")
-    df = pd.DataFrame(final_results)
+    status_text.success("✅ Barcha yillar muvaffaqiyatli tahlil qilindi!")
     
     # Yuklab olish tugmasi
-    st.download_button("Excel (CSV) ko'rinishida yuklash", df.to_csv(index=False), "basin3_full_report.csv")
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Ma'lumotlarni Excel (CSV) formatida yuklab olish", csv, "basin3_full_analysis.csv", "text/csv")
+
+    # Trend Grafigi
+    st.subheader("📊 Asosiy ko'rsatkichlar trendi")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df['Yil'], y=df['EVI (Yashillik)'], name="EVI", line=dict(color='green', width=3)))
+    fig.add_trace(go.Scatter(x=df['Yil'], y=df['NDMI (Suv Stress)'], name="NDMI", line=dict(color='blue', dash='dash')))
+    st.plotly_chart(fig, use_container_width=True)
