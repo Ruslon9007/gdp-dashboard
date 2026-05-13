@@ -1,10 +1,18 @@
 import streamlit as st
+import sys
 
-# Python 3.12+ va geemap muammosini hal qilish uchun patch
+# --- PYTHON 3.12+ VA GEEMAP PATCH ---
+# pkg_resources moduli topilmasa, uni pip vendor ichidan qidiramiz
 try:
     import pkg_resources
 except ImportError:
-    import pip._vendor.pkg_resources as pkg_resources
+    try:
+        import pip._vendor.pkg_resources as pkg_resources
+    except ImportError:
+        # Agar umuman topilmasa, soxta modul yaratamiz (geemap buzilmasligi uchun)
+        from types import ModuleType
+        pkg_resources = ModuleType("pkg_resources")
+        sys.modules["pkg_resources"] = pkg_resources
 
 import ee
 import pandas as pd
@@ -17,8 +25,11 @@ from datetime import datetime
 # Geemap-ni xavfsiz import qilish
 try:
     import geemap.foliumap as geemap
-except (ImportError, KeyError, Exception):
-    import geemap
+except Exception:
+    try:
+        import geemap
+    except ImportError:
+        st.error("Kutubxonalar o'rnatilmagan. Iltimos requirements.txt faylini tekshiring.")
 # --- 1. KONFIGURATSIYA VA STYLING ---
 st.set_page_config(
     page_title="Basin3 | Eco-Intelligence",
