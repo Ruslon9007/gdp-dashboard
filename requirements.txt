@@ -1,9 +1,8 @@
-# requirements.txt
 streamlit
 earthengine-api
 pandas
-numpy
 plotly
-matplotlib>=3.5.0
-openpyxl
+numpy
+geemap
+folium
 xlsxwriter
