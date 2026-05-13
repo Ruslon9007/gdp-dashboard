@@ -1,4 +1,11 @@
 import streamlit as st
+
+# Python 3.12+ va geemap muammosini hal qilish uchun patch
+try:
+    import pkg_resources
+except ImportError:
+    import pip._vendor.pkg_resources as pkg_resources
+
 import ee
 import pandas as pd
 import plotly.graph_objects as go
@@ -6,8 +13,12 @@ from plotly.subplots import make_subplots
 import json
 import numpy as np
 from datetime import datetime
-import geemap.foliumap as geemap  # Interaktiv xarita uchun
 
+# Geemap-ni xavfsiz import qilish
+try:
+    import geemap.foliumap as geemap
+except (ImportError, KeyError, Exception):
+    import geemap
 # --- 1. KONFIGURATSIYA VA STYLING ---
 st.set_page_config(
     page_title="Basin3 | Eco-Intelligence",
